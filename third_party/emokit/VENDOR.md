@@ -16,7 +16,13 @@ Not supported: EPOC+ from 2016 onward, EPOC X, Insight, Flex, MN8, and any heads
 
 The source contains branches for Python 3. Importing it on a current Python still fails until two old packages are installed: `pycrypto==2.6.1` (the Advanced Encryption Standard (AES) decryptor) and `hidapi`. `pycrypto` 2.6.1 does not build on Python 3.12. This project does not pretend otherwise. A real headset has to be tried on the machine's own Python.
 
+## Decryption for the original EPOC
+
+The decryption code was not changed. An original consumer EPOC uses `crypto_key` in `util.py`: a 16-byte Advanced Encryption Standard (AES) key built from the headset serial number, then AES in ECB mode. The EPOC+ key (`new_crypto_key` / `epoc_plus_crypto_key`) is a different recipe. This project opens the headset with `is_research=False` and `force_old_crypto=True`, so the reader takes the original `crypto_key` path and the old 14-bit packet layout.
+
 ## Fixes applied in this copy
+
+Neither fix touches the key or the decrypt function.
 
 - `python/emokit/reader.py`: the reader thread printed `ex.message`, which exists on Python 2 only. A read error ended the thread. It now prints the exception itself.
 - `python/emokit/emotiv.py`: `serial_number.startswith` ran even when no headset had been found and the serial was `None`.

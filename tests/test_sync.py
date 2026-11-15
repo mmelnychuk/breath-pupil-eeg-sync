@@ -11,7 +11,7 @@ from sniff_sync.check import compare_session
 from sniff_sync.diameter import sample_from_pupil_message
 from sniff_sync.eeg import channels_from_packet, emokit_status
 from sniff_sync.simulate import Session
-from sniff_sync.timefmt import TIMESTAMP_FORMAT
+from sniff_sync.timefmt import TIMESTAMP_FORMAT, unix_seconds
 
 
 class Packet:
@@ -44,7 +44,8 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(result["compared"], 1)
         text = (self.session.directory / "breathing.csv").read_text()
         self.assertIn("stimulus_onset", text)
-        self.assertIn("trigger", text)
+        self.assertIn("Unix Time", text)
+        self.assertIn("Nasal Pressure", text)
         stamp = _trigger_stamp(self.session.directory / "breathing.csv")
         self.assertGreater(stamp, before - 1)
         self.assertLess(stamp, time.time() + 1)
@@ -64,8 +65,8 @@ class SyncTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["compared"], 0)
         text = (self.session.directory / "breathing.csv").read_text()
-        self.assertIn("sample", text)
-        self.assertNotIn(",trigger,", text)
+        self.assertIn("Nasal Pressure", text)
+        self.assertNotIn("stimulus_onset", text)
 
     def test_pupil_diameter_reaches_the_view_in_unix_time(self):
         deadline = time.time() + 2
@@ -122,14 +123,19 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(sniff_trigger_capture.TIMESTAMP_FORMAT, TIMESTAMP_FORMAT)
         self.assertEqual(sniff_trigger_capture.format_timestamp(1.25), format(1.25, TIMESTAMP_FORMAT))
 
+    def test_polar_display_milliseconds_become_seconds(self):
+        seconds = 1_700_000_000.5
+        self.assertEqual(unix_seconds(seconds), seconds)
+        self.assertEqual(unix_seconds(seconds * 1000.0), seconds)
+
 
 def _trigger_stamp(path: Path) -> float:
     import csv
 
     with open(path, newline="") as handle:
         for row in csv.DictReader(handle):
-            if row["kind"] == "trigger":
-                return float(row["unix_time"])
+            if (row.get("Trigger") or "").strip():
+                return float(row["Unix Time"])
     raise AssertionError("no trigger row")
 
 

@@ -12,13 +12,17 @@ def _rows(path: Path) -> dict:
     found = {}
     with open(path, newline="") as handle:
         for row in csv.DictReader(handle):
-            if row.get("kind") not in (None, "", "trigger"):
+            kind = (row.get("kind") or "").strip()
+            if kind == "sample":
                 continue
             trigger_id = (row.get("trigger_id") or "").strip()
             if not trigger_id or trigger_id == "trigger_id":
                 continue
-            unix = (row.get("unix_time") or row.get("timestamp") or "").strip()
-            found[trigger_id] = {"unix_time": unix, "label": (row.get("label") or "").strip()}
+            label = (row.get("label") or row.get("Trigger") or "").strip()
+            unix = (row.get("unix_time") or row.get("Unix Time") or row.get("timestamp") or "").strip()
+            if not unix:
+                continue
+            found[trigger_id] = {"unix_time": unix, "label": label}
     return found
 
 

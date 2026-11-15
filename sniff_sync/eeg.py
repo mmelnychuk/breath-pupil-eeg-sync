@@ -21,9 +21,9 @@ def emokit_status() -> dict:
     status = {
         "vendored": str(_EMOKIT_PYTHON.parent),
         "commit": "7f25321a1c3a240f5b64a1572e5f106807b1beea",
-        "supported_models": ["EPOC", "EPOC+ from before 2016"],
+        "supported_models": ["original EPOC"],
         "unsupported_models": [
-            "EPOC+ from 2016 onward",
+            "EPOC+",
             "EPOC X",
             "Insight",
             "Flex",
@@ -76,7 +76,16 @@ class EmokitHeadset:
         from emokit.emotiv import Emotiv
 
         try:
-            self._headset = Emotiv(display_output=False, write=False, verbose=False)
+            # Original consumer EPOC: the old packet layout and the original
+            # AES key (crypto_key, not the EPOC+ key). is_research stays false.
+            self._headset = Emotiv(
+                display_output=False,
+                write=False,
+                verbose=False,
+                is_research=False,
+                force_old_crypto=True,
+                force_epoc_mode=False,
+            )
         except Exception as exc:
             self.error = "%s: %s" % (type(exc).__name__, exc)
             self._headset = None

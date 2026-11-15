@@ -51,14 +51,14 @@ class _Csv:
 
 
 class BreathingLog(_Csv):
-    """Breathing stream plus trigger rows, in one file.
+    """getSniffs.py columns, plus a trigger label when a trigger arrives.
 
-    A sample row has a nasal pressure. A trigger row has a label. Both
-    use Unix time. The pressure column is the same quantity getSniffs.py
-    stores, in pascal.
+    getSniffs.py writes ``Unix Time`` in seconds and ``Nasal Pressure``
+    in pascal. A pressure sample leaves Trigger empty. A trigger row
+    carries the label and the same Unix seconds, and leaves pressure empty.
     """
 
-    columns = ["unix_time", "kind", "nasal_pressure", "label", "trigger_id"]
+    columns = ["Unix Time", "Nasal Pressure", "Trigger", "trigger_id"]
 
     def __init__(self, path):
         super().__init__(Path(path), self.columns)
@@ -66,10 +66,9 @@ class BreathingLog(_Csv):
     def write_sample(self, unix_time: float, nasal_pressure: float) -> None:
         self.write(
             {
-                "unix_time": format_timestamp(unix_time),
-                "kind": "sample",
-                "nasal_pressure": format(float(nasal_pressure), ".6f"),
-                "label": "",
+                "Unix Time": format_timestamp(unix_time),
+                "Nasal Pressure": format(float(nasal_pressure), ".6f"),
+                "Trigger": "",
                 "trigger_id": "",
             }
         )
@@ -77,10 +76,9 @@ class BreathingLog(_Csv):
     def write_trigger(self, event: Trigger) -> None:
         self.write(
             {
-                "unix_time": format_timestamp(event.unix_time),
-                "kind": "trigger",
-                "nasal_pressure": "",
-                "label": event.label,
+                "Unix Time": format_timestamp(event.unix_time),
+                "Nasal Pressure": "",
+                "Trigger": event.label,
                 "trigger_id": event.trigger_id,
             }
         )

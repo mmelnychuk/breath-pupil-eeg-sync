@@ -16,6 +16,7 @@ from pathlib import Path
 
 from sniff_sync.eeg import EmokitHeadset
 from sniff_sync.simulate import Session
+from sniff_sync.timefmt import unix_seconds
 from sniff_sync.trigger import DEFAULT_PORT
 
 
@@ -32,9 +33,9 @@ def main(argv=None) -> int:
     if args.simulate:
         session = Session(session_dir, port=DEFAULT_PORT)
         session.start()
-        print("Hub listening on tcp://127.0.0.1:%s" % session.hub.port)
-        print("Session files are in %s" % session.directory)
-        print('From another program: from sniff_sync import trigger; trigger("task_start")')
+        print("Hub listening on tcp://127.0.0.1:%s" % session.hub.port, flush=True)
+        print("Session files are in %s" % session.directory, flush=True)
+        print('From another program: from sniff_sync import trigger; trigger("label")', flush=True)
         window = None
         if not args.no_window:
             if not os.environ.get("DISPLAY"):
@@ -125,7 +126,7 @@ def main(argv=None) -> int:
 
 
 def _tail_sniff(path: Path, feed, stopped) -> None:
-    """Follow a getSniffs.py CSV. The time column is Unix seconds."""
+    """Follow a getSniffs.py CSV. Times are stored as Unix seconds."""
     while not path.exists() and not stopped():
         time.sleep(0.1)
     if not path.exists():
@@ -143,7 +144,7 @@ def _tail_sniff(path: Path, feed, stopped) -> None:
             if len(parts) < 2 or parts[0] in ("Unix Time", "unix_time"):
                 continue
             try:
-                feed.add_breath(float(parts[0]), float(parts[1]))
+                feed.add_breath(unix_seconds(parts[0]), float(parts[1]))
             except ValueError:
                 continue
 

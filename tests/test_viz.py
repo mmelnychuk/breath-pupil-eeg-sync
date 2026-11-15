@@ -25,20 +25,31 @@ class ViewTests(unittest.TestCase):
             trigger("stimulus_onset")
             self.assertTrue(session.wait_for_label("stimulus_onset"))
             deadline = time.time() + 2
-            while time.time() < deadline and not session.feed.snapshot()["pupil"]:
+            while time.time() < deadline:
+                snap = session.feed.snapshot()
+                if snap["pupil"] and len(snap["breath"]) >= 8 and snap["eeg"]:
+                    break
                 time.sleep(0.05)
             window = Monitor(session.feed)
             app.processEvents()
             window.refresh()
             pupil_x = list(window.eye0.getData()[0])
-            breath_x = list(window.breath_curve.getData()[0])
             self.assertTrue(pupil_x)
-            self.assertTrue(breath_x)
             self.assertGreater(min(pupil_x), 1_000_000_000)
-            self.assertGreater(min(breath_x), 1_000_000_000)
+            point_x = list(window.breath_point.getData()[0])
+            self.assertEqual(len(point_x), 1)
             self.assertEqual(len(window._seen), 1)
-            self.assertIn("Pupil diameter", window.pupil_plot.titleLabel.text)
-            self.assertNotIn("gaze", window.pupil_plot.titleLabel.text.lower())
+            self.assertIn("Pupil diameter", window.pupil_plot.getPlotItem().titleLabel.text)
+            self.assertNotIn("gaze", window.pupil_plot.getPlotItem().titleLabel.text.lower())
+            self.assertIn("phase", window.polar_plot.getPlotItem().titleLabel.text.lower())
+            self.assertTrue(window.channel_boxes["AF3"].isChecked())
+            window.channel_boxes["AF3"].setChecked(False)
+            window.refresh()
+            hidden = window.eeg_curves["AF3"].getData()[0]
+            self.assertTrue(hidden is None or len(list(hidden)) == 0)
+            self.assertIn("breath", window._panels)
+            self.assertIn("pupil", window._panels)
+            self.assertIn("eeg", window._panels)
             window.close()
         finally:
             session.stop()
