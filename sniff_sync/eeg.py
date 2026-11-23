@@ -1,8 +1,8 @@
-"""Read EEG from emokit, or from a stand-in when no headset is attached.
+"""Read electroencephalography from emokit, or from a stand-in when no headset is attached.
 
 A real headset is opened only when asked. Importing this module does
-not import emokit, because emokit imports an old crypto package at
-import time.
+not import emokit. emokit decrypts with pycryptodome (the Crypto.Cipher.AES
+module) when the headset reader itself is imported.
 """
 
 from __future__ import annotations

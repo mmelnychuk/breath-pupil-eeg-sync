@@ -49,11 +49,12 @@ def get_level(data, bits, verbose=False):
         level <<= 1
         b = (bits[i] // 8) + 1
         o = bits[i] % 8
-        bit_list.append(str(ord(data[b]) >> o & 1))
-        if sys.version_info >= (3, 0):
-            level |= (data[b] >> o) & 1
-        else:
-            level |= (ord(data[b]) >> o) & 1
+        byte = data[b]
+        # Python 3 packet bytes are already integers. ord() is only for a one-character string.
+        if not isinstance(byte, int):
+            byte = ord(byte)
+        bit_list.append(str((byte >> o) & 1))
+        level |= (byte >> o) & 1
             # print(level)
     # print(bit_list)
     # whole_bits = list(reversed(bit_list[0:7]))

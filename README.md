@@ -63,11 +63,11 @@ Inside Pupil, each annotation has `unix_time` (the shared clock) and `timestamp`
 
 The reader is the vendored copy of [openyou/emokit](https://github.com/openyou/emokit) at commit `7f25321`, under `third_party/emokit`. Limits and the two small fixes are in [third_party/emokit/VENDOR.md](third_party/emokit/VENDOR.md).
 
-- The headset this project opens is the original Emotiv EPOC, not an EPOC+. The hub asks emokit for the original decryption key (`crypto_key`, consumer model, not the research or EPOC+ key). The key schedule itself was not edited. Two crash fixes in the vendored copy are described in [third_party/emokit/VENDOR.md](third_party/emokit/VENDOR.md): a Python 2 exception attribute, and a missing serial number.
+- The headset this project opens is the original Emotiv EPOC, not an EPOC+. The hub asks emokit for the original decryption key (`crypto_key`, consumer model, not the research or EPOC+ key). The key schedule itself was not edited. The library changes are described in [third_party/emokit/VENDOR.md](third_party/emokit/VENDOR.md).
 - EPOC+, EPOC X, Insight, Flex, and MN8 are not read. Newer headsets need Emotiv's Cortex service, which this project does not speak.
-- The library decrypts packets with `pycrypto==2.6.1` and reads USB (Universal Serial Bus) through `hidapi`. `pycrypto` 2.6.1 does not build on Python 3.12. On this environment the import fails, and the hub still records trigger markers in `eeg.csv` with a clear error. A real headset has to be tried on the rig's own Python.
+- Packets are decrypted with `pycryptodome` (`Crypto.Cipher.AES`), which installs on Python 3.9 through 3.12. The older `pycrypto` 2.6.1 package does not build on Python 3.12 and is not used. The headset is still read as a Universal Serial Bus human-interface device through the `hidapi` package. Check the import before a session with `emokit_status()`, which reports an empty `import_error` when decryption can load.
 - emokit stamps packets with `datetime.now()`. This project ignores that and stores `time.time()` when the packet is dequeued.
-- Channel numbers are emokit's raw sensor values. Their FAQ says one step is about 0.51 microvolts on the original EPOC. Treat that as unchecked until you confirm it on the headset.
+- Channel numbers are the values emokit produces from the 14-bit packet. The decoder multiplies each 14-bit level by 0.5151515151. The library's own notes call one step about 0.51 microvolts on the original EPOC. Treat that scale as unchecked until you confirm it on the headset in front of you.
 
 The fourteen channels saved are AF3, F7, F3, FC5, T7, P7, O1, O2, P8, T8, FC6, F4, F8, AF4.
 
@@ -222,13 +222,68 @@ Electroencephalography is not used raw. Each channel is split into delta, theta,
 
 The table and the figure land in `recordings/P01/nlid/`. The measures, the conditional test that separates a direct breathing–attention link from one that only passes through pupil diameter, and the partial cross mapping comparison are written out in [docs/nonlinear_interdependence.md](docs/nonlinear_interdependence.md).
 
-## On the real rig
+## Compare the live scores with the reference
 
-- The sniff serial port in `getSniffs.py` is hard-coded. If the device name changed, `ls /dev/tty*` and update that path. The hub does not open the serial port.
-- Feed the live view a `getSniffs.py` CSV (`Unix Time` in seconds, `Nasal Pressure`). A `Sniff_polar_display.py` file is milliseconds and is divided by 1000 on read. Our own files stay in seconds.
-- Pupil's Network API is on localhost port 50020, and Sniff Trigger Capture is enabled. Start the recording before `trigger()`.
-- After the hub connects, a fresh Pupil `t` query should sit within a few milliseconds of `time.time()` plus the printed offset. The link is local, so a gap of tens of milliseconds means the offset was measured badly and should be redone by restarting the hub before the recording.
-- Pupil diameter in millimetres appears only when the 3d detector is running. Otherwise the plugin menu shows the 2d diameter in pixels, and the live view waits for millimetres.
-- The headset must be an original consumer EPOC. EPOC+ will not use the right key. Install `hidapi` and a crypto package that matches the rig's Python (`pycrypto` 2.6.1 does not build on Python 3.12), and install emokit's udev rule (`third_party/emokit/linux/epoc.rules`) so the USB device is readable.
-- Check one real trigger: the Unix time in `breathing.csv`, `eeg.csv`, and `sniff_sync_triggers.csv` should be the same number, and the annotation should sit on the right moment in Pupil Player.
-- The 0.51 microvolt step is from emokit's FAQ. Confirm it before reporting EEG in microvolts.
+After a session that wrote `coupling_approximate.csv`:
+
+```bash
+python -m sniff_sync.compare recordings/P01
+```
+
+If `coupling_reference.csv` is not there yet, this command writes it first (the same pass as `python -m sniff_sync.reference`). It then lines the two files up by window end time. For each directed link and each measure it prints the correlation across windows and the median absolute difference. For each pair it prints the fraction of windows where the larger score points the same way. The table is `coupling_comparison.csv` and the figure is `coupling_comparison.png`, both in the session folder.
+
+## Real-rig checklist
+
+Do these in order on the computer that has the sensors. The headset must be an original consumer EPOC (Emotiv's original electroencephalography headset). An EPOC+ uses a different key and will not decrypt with this schedule.
+
+1. Install this package with `pycryptodome`, and install the human-interface-device library. From the repository directory:
+
+   ```bash
+   pip install -e '.[analysis]'
+   pip install hidapi
+   ```
+
+   `pycryptodome` is the decryption library (`Crypto.Cipher.AES`). `hidapi` is how the headset is opened over Universal Serial Bus. Copy `third_party/emokit/linux/epoc.rules` into the udev rules so the device is readable without root, then replug the headset.
+
+2. Check that emokit imports on this Python before you depend on a recording:
+
+   ```bash
+   python -c 'from sniff_sync.eeg import emokit_status; print(emokit_status())'
+   ```
+
+   `import_error` should be an empty string. A message there means decryption or the reader did not load, and the hub will still write trigger rows to `eeg.csv` but no sensor values.
+
+3. Start the other two streams. In Pupil Capture, turn on the Network API on port 50020, turn on the 3D detector (so diameter is in millimetres rather than pixels), and enable the Sniff Trigger Capture plugin. Start the Pupil recording before the first trigger. Start `getSniffs.py` so it is writing nasal pressure. Its serial-port path is hard-coded; if the device name changed, run `ls /dev/tty*` and update that path. The hub does not open the serial port. A `getSniffs.py` file uses `Unix Time` in seconds and `Nasal Pressure`. A `Sniff_polar_display.py` file is in milliseconds and is divided by 1000 on read.
+
+4. Start the hub and point it at that pressure file:
+
+   ```bash
+   python -m sniff_sync --session recordings/P01 --sniff-csv subject_data/P01/KH_sniff.csv
+   ```
+
+   After it connects, a fresh Pupil `t` query should sit within a few milliseconds of `time.time()` plus the offset the hub printed (Pupil time minus Unix time). The link is local, so a gap of tens of milliseconds means the offset was measured badly. Restart the hub before the recording and let it measure the offset again.
+
+5. Send one trigger from another program on the same computer:
+
+   ```bash
+   python -c 'from sniff_sync import trigger; trigger("label")'
+   ```
+
+6. Stop the hub, then confirm the three recordings share that trigger:
+
+   ```bash
+   python -m sniff_sync.check recordings/P01
+   ```
+
+   The Unix time in `breathing.csv`, `eeg.csv`, and `sniff_sync_triggers.csv` should be the same number, and the annotation should sit on the right moment in Pupil Player.
+
+7. Recompute the windows with forward-backward filters and compare them with the live scores:
+
+   ```bash
+   python -m sniff_sync.reference recordings/P01
+   python -m sniff_sync.compare recordings/P01
+   ```
+
+   The comparison writes `coupling_comparison.csv` and `coupling_comparison.png` in the session folder. Read the correlation, the median absolute difference, and the fraction of windows whose dominant direction matches.
+
+8. Confirm the 0.51 microvolt scale on this headset before you report electroencephalography in microvolts. The saved channel values are already the 14-bit levels multiplied by 0.5151515151, which is the conversion in the vendored decoder. The library's notes call one step about 0.51 microvolts. That number has not been checked on this headset. Compare a known input, or Emotiv's own viewer, against the values in `eeg.csv`, and only then treat the file as microvolts.
