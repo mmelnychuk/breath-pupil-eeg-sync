@@ -6,11 +6,13 @@ about once a second. It returns breathing, pupil diameter, and the
 electroencephalography (EEG) envelopes on one grid at 10 hertz. Times
 are Unix seconds.
 
-Every filter here runs forward only: each output sample depends on the
-present and the past, not on samples that have not arrived yet. A forward
-filter shifts its output later. That shift is the group delay. It is
-subtracted from the timestamps so a change that happened at one moment
-in the raw streams shows up at that same moment on the grid.
+The live filters are symmetric finite impulse response filters with an
+odd number of taps. Every frequency is delayed by the same whole number
+of samples, (taps − 1) / 2. That delay is subtracted from the timestamps,
+so a change that happened at one moment in the raw streams shows up at
+that same moment on the grid. The result is for the live display and is
+approximate. The post-session reference uses forward-backward filtering
+instead, and has no delay.
 """
 
 from __future__ import annotations
@@ -21,9 +23,9 @@ from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.signal import butter, group_delay, sos2tf, sosfilt
 
 from sniff_sync.eeg_channels import EPOC_CHANNELS
+from sniff_sync.filters import apply_fir, design, profile_specs
 
 # One sample every 0.1 seconds.
 OUTPUT_RATE_HZ = 10.0
@@ -37,16 +39,10 @@ MAXIMUM_WINDOW_SECONDS = 120.0
 # seconds; eight seconds leaves a margin.
 WARMUP_SECONDS = 8.0
 
-# Below the 5 hertz Nyquist rate of the 10 hertz grid, so the down-sample
-# does not fold higher frequencies into the window.
-ANTI_ALIAS_HZ = 4.0
-FILTER_ORDER = 2
+# The live profile is the display default. "clean" is the longer
+# linear-phase set that meets the tighter stopband tolerance.
+DEFAULT_FILTER_PROFILE = "live"
 
-# Amplitude changes of interest are near the breathing rate. The envelope
-# smoother and the breathing low-pass are both measured there.
-DELAY_REFERENCE_HZ = 0.25
-
-ENVELOPE_LOWPASS_HZ = 1.0
 DELTA_BAND_HZ = (1.0, 4.0)
 ALPHA_BAND_HZ = (8.0, 12.0)
 
@@ -249,164 +245,48 @@ def _as_uniform(times, values):
     return _uniform_from_samples(times, values)
 
 
-def _group_delay_seconds(sos, sample_rate_hz, frequencies_hz):
-    """Mean group delay, in seconds, at the requested frequencies."""
-    frequencies = np.atleast_1d(np.asarray(frequencies_hz, dtype=float))
-    nyquist = sample_rate_hz / 2.0
-    frequencies = frequencies[(frequencies > 0) & (frequencies < nyquist)]
-    if frequencies.size == 0:
-        return float("nan")
-    coefficients = sos2tf(sos)
-    _frequencies, delays = group_delay(coefficients, w=frequencies, fs=sample_rate_hz)
-    delays = np.asarray(delays, dtype=float)
-    usable = np.isfinite(delays) & (delays >= 0)
-    if not np.any(usable):
-        return float("nan")
-    return float(np.mean(delays[usable]) / sample_rate_hz)
-
-
-def _band_group_delay_seconds(sos, sample_rate_hz, low_hz, high_hz):
-    """Mean group delay across the pass-band, in seconds."""
-    frequencies = np.linspace(low_hz, high_hz, 41)
-    return _group_delay_seconds(sos, sample_rate_hz, frequencies)
-
-
-def _impulse_settling_samples(sos, sample_rate_hz, threshold=0.01):
-    """How many leading samples to drop while a filter rings down."""
-    count = int(sample_rate_hz * 8.0)
-    if count < 8:
-        return 0
-    impulse = np.zeros(count)
-    impulse[0] = 1.0
-    response = np.abs(sosfilt(sos, impulse))
-    peak = float(np.max(response))
-    if peak <= 0:
-        return 0
-    above = np.flatnonzero(response > threshold * peak)
-    if above.size == 0:
-        return 0
-    return int(above[-1]) + 1
-
-
-def _envelope_settling_samples(sample_rate_hz, low_hz, high_hz, envelope_hz, bandpass, smoother):
-    """Samples to drop before a steady sine's envelope has settled."""
-    carrier_hz = 0.5 * (low_hz + high_hz)
-    duration = 12.0
-    times = np.arange(0.0, duration, 1.0 / sample_rate_hz)
-    wave = np.sin(2.0 * math.pi * carrier_hz * times)
-    filtered = sosfilt(bandpass, wave)
-    smoothed = sosfilt(smoother, filtered * filtered)
-    envelope = np.sqrt(np.maximum(smoothed, 0.0) * 2.0)
-    tail = envelope[int(sample_rate_hz * 8.0) :]
-    if tail.size == 0:
-        return 0
-    level = float(np.median(tail))
-    if not math.isfinite(level) or level <= 0:
-        return int(sample_rate_hz * 2.0)
-    above = np.flatnonzero(np.abs(envelope - level) > 0.02 * level)
-    if above.size == 0:
-        return 0
-    return int(min(above[-1] + 1, envelope.size - 2))
-
-
-def _lowpass_sections(sample_rate_hz, cutoff_hz, order):
-    nyquist = sample_rate_hz / 2.0
-    cutoff = min(float(cutoff_hz), 0.75 * nyquist)
-    if cutoff <= 0.05 or cutoff >= nyquist:
-        return None, float("nan")
-    sections = butter(order, cutoff, btype="lowpass", fs=sample_rate_hz, output="sos")
-    reference_hz = min(DELAY_REFERENCE_HZ, 0.5 * cutoff)
-    delay = _group_delay_seconds(sections, sample_rate_hz, [reference_hz])
-    return sections, delay
-
-
-def causal_lowpass(times, values, cutoff_hz=ANTI_ALIAS_HZ, order=FILTER_ORDER):
-    """Low-pass a series without looking ahead.
+def linear_phase_lowpass(times, values, profile=DEFAULT_FILTER_PROFILE):
+    """Low-pass onto an even grid with a symmetric finite impulse response filter.
 
     Returns ``(times, values, delay_seconds)``. The times are not shifted.
-    ``delay_seconds`` is the group delay at 0.25 hertz, or lower when the
-    cutoff itself is below that. The first part of each unbroken stretch
-    is missing, because the filter has not settled there yet.
+    ``delay_seconds`` is exactly (taps − 1) / 2 divided by the sample rate.
+    The first taps − 1 samples of each unbroken stretch are missing, because
+    the filter has not seen a full window yet.
     """
     prepared = _as_uniform(times, values)
     if prepared is None:
         return np.asarray(times, dtype=float), np.full(len(times), np.nan), float("nan")
     grid, samples, sample_rate = prepared
-    sections, delay = _lowpass_sections(sample_rate, cutoff_hz, order)
-    if sections is None or not math.isfinite(delay):
-        return grid, np.full(grid.shape, np.nan), float("nan")
-    settle = _impulse_settling_samples(sections, sample_rate)
-    filtered = np.full(samples.shape, np.nan, dtype=float)
-    for start, stop in _finite_runs(samples):
-        if stop - start <= settle + 4:
-            continue
-        piece = sosfilt(sections, samples[start:stop])
-        piece = np.array(piece, dtype=float, copy=True)
-        piece[:settle] = np.nan
-        filtered[start:stop] = piece
-    return grid, filtered, float(delay)
-
-
-# Keyed by sample rate and band edges. Safe to reuse: the filters are read-only.
-_BAND_PREPARED = {}
-
-
-def _prepare_band(sample_rate_hz, low_hz, high_hz):
-    """Filters, delay, and settling for one band. The same rate is reused.
-
-    The delay does not depend on the recording, only on the sample rate and
-    the band, so it is kept and reused for every channel and every later call.
-    """
-    key = (round(float(sample_rate_hz), 6), round(float(low_hz), 6), round(float(high_hz), 6))
-    if key in _BAND_PREPARED:
-        return _BAND_PREPARED[key]
-    nyquist = sample_rate_hz / 2.0
-    if not (0.0 < low_hz < high_hz < 0.90 * nyquist) or ENVELOPE_LOWPASS_HZ >= nyquist:
-        _BAND_PREPARED[key] = None
-        return None
     try:
-        bandpass = butter(FILTER_ORDER, [low_hz, high_hz], btype="bandpass", fs=sample_rate_hz, output="sos")
-        smoother = butter(FILTER_ORDER, ENVELOPE_LOWPASS_HZ, btype="lowpass", fs=sample_rate_hz, output="sos")
+        fir = design(profile_specs(profile)["anti_alias"], sample_rate)
     except ValueError:
-        _BAND_PREPARED[key] = None
-        return None
-    band_delay = _band_group_delay_seconds(bandpass, sample_rate_hz, low_hz, high_hz)
-    smooth_delay = _group_delay_seconds(smoother, sample_rate_hz, [DELAY_REFERENCE_HZ])
-    if not math.isfinite(band_delay) or not math.isfinite(smooth_delay):
-        _BAND_PREPARED[key] = None
-        return None
-    settle = _envelope_settling_samples(sample_rate_hz, low_hz, high_hz, ENVELOPE_LOWPASS_HZ, bandpass, smoother)
-    prepared = (bandpass, smoother, float(band_delay + smooth_delay), int(settle))
-    _BAND_PREPARED[key] = prepared
-    return prepared
+        return grid, np.full(grid.shape, np.nan), float("nan")
+    filtered, delay_samples = apply_fir(samples, fir)
+    return grid, filtered, delay_samples / sample_rate
 
 
-def _band_envelope(samples, sample_rate_hz, low_hz, high_hz):
-    """Causal amplitude envelope of one band, and its delay in seconds.
+def _band_envelope(samples, sample_rate_hz, band_name, profile=DEFAULT_FILTER_PROFILE):
+    """Amplitude envelope of one band, and its delay in seconds.
 
-    The series is band-pass filtered, squared, smoothed, and square-rooted.
-    Squaring a sine of amplitude A leaves a steady part of A squared over 2,
-    so the square root is multiplied by the square root of 2 and the result
-    is near A.     The delay is the mean group delay of the band-pass across
-    the band, plus the group delay of the smoother at 0.25 hertz.
-    Across the delta band that group delay is not flat: it is shorter
-    near 4 hertz than near 1 hertz. The average is the single number
-    the resampler can subtract.
+    The series is band-pass filtered, rectified, and smoothed. Both filters
+    are symmetric and odd-length, so each delays every frequency by the same
+    whole number of samples. Rectification has no memory, so the envelope
+    delay is the sum of the two filter delays. A unit sine comes back near
+    amplitude 1, because the mean of the absolute value of a unit sine is
+    2 / pi and that factor is put back.
     """
-    prepared = _prepare_band(sample_rate_hz, low_hz, high_hz)
-    if prepared is None:
+    specs = profile_specs(profile)
+    try:
+        bandpass = design(specs[band_name], sample_rate_hz)
+        smoother = design(specs["envelope"], sample_rate_hz)
+    except ValueError:
         return None
-    bandpass, smoother, delay, settle = prepared
-    envelope = np.full(samples.shape, np.nan, dtype=float)
-    for start, stop in _finite_runs(samples):
-        if stop - start <= settle + 8:
-            continue
-        filtered = sosfilt(bandpass, samples[start:stop])
-        power = sosfilt(smoother, filtered * filtered)
-        piece = np.sqrt(np.maximum(power, 0.0) * 2.0)
-        piece[:settle] = np.nan
-        envelope[start:stop] = piece
-    return envelope, delay
+    band, band_delay = apply_fir(samples, bandpass)
+    rectified = np.abs(band)
+    rectified[~np.isfinite(band)] = np.nan
+    envelope, smooth_delay = apply_fir(rectified, smoother)
+    envelope = envelope * (np.pi / 2.0)
+    return envelope, (band_delay + smooth_delay) / sample_rate_hz
 
 
 def merge_eyes(samples):
@@ -544,35 +424,32 @@ class ShortGapBridge(PupilStage):
         return np.asarray(times, dtype=float), fill_short_gaps(times, values, self.max_gap_seconds)
 
 
-class CausalLowpass(PupilStage):
-    """Forward low-pass, used so the 10 hertz grid does not alias.
+class LinearPhaseLowpass(PupilStage):
+    """Symmetric low-pass, so the 10 hertz grid does not alias.
 
-    ``delay_s`` is filled in when the step runs, because it depends on
-    the sample rate of the series it is given.
+    ``delay_s`` is filled in when the step runs. It is (taps − 1) / 2
+    divided by the sample rate of the series it is given.
     """
 
-    name = "causal low-pass"
+    name = "linear-phase low-pass"
 
-    def __init__(self, cutoff_hz=ANTI_ALIAS_HZ, order=FILTER_ORDER):
-        self.cutoff_hz = float(cutoff_hz)
-        self.order = int(order)
+    def __init__(self, profile=DEFAULT_FILTER_PROFILE):
+        self.profile = profile
         self.delay_s = 0.0
 
     def apply(self, times, values):
-        filtered_times, filtered_values, delay = causal_lowpass(
-            times, values, cutoff_hz=self.cutoff_hz, order=self.order
-        )
+        filtered_times, filtered_values, delay = linear_phase_lowpass(times, values, profile=self.profile)
         self.delay_s = 0.0 if not math.isfinite(delay) else float(delay)
         return filtered_times, filtered_values
 
 
-def default_pupil_stages():
+def default_pupil_stages(profile=DEFAULT_FILTER_PROFILE):
     """The pupil path with no blink correction.
 
     Put a blink-correction step after the short-gap bridge and before
     the low-pass. Give it a ``delay_s``.
     """
-    return [ShortGapBridge(), CausalLowpass()]
+    return [ShortGapBridge(), LinearPhaseLowpass(profile=profile)]
 
 
 @dataclass
@@ -595,6 +472,7 @@ class ResampledWindow:
     valid: np.ndarray
     delays_seconds: dict
     pupil_stage_delays_seconds: tuple
+    filter_profile: str = DEFAULT_FILTER_PROFILE
 
 
 class RollingHistory:
@@ -605,7 +483,12 @@ class RollingHistory:
     the call to make about once a second.
     """
 
-    def __init__(self, window_seconds=DEFAULT_WINDOW_SECONDS, eeg_channels=DEFAULT_EEG_CHANNELS):
+    def __init__(
+        self,
+        window_seconds=DEFAULT_WINDOW_SECONDS,
+        eeg_channels=DEFAULT_EEG_CHANNELS,
+        filter_profile=DEFAULT_FILTER_PROFILE,
+    ):
         self._lock = threading.Lock()
         self._breath = deque()
         self._pupil = deque()
@@ -613,9 +496,11 @@ class RollingHistory:
         self._triggers = deque()
         self._window_seconds = DEFAULT_WINDOW_SECONDS
         self._eeg_channels = DEFAULT_EEG_CHANNELS
-        self.pupil_stages = default_pupil_stages()
+        self._filter_profile = DEFAULT_FILTER_PROFILE
+        self.pupil_stages = default_pupil_stages(filter_profile)
         self.set_window_seconds(window_seconds)
         self.eeg_channels = eeg_channels
+        self.filter_profile = filter_profile
 
     @property
     def window_seconds(self) -> float:
@@ -632,6 +517,18 @@ class RollingHistory:
     @eeg_channels.setter
     def eeg_channels(self, names) -> None:
         self._eeg_channels = _check_eeg_channels(names)
+
+    @property
+    def filter_profile(self) -> str:
+        return self._filter_profile
+
+    @filter_profile.setter
+    def filter_profile(self, profile: str) -> None:
+        profile_specs(profile)
+        self._filter_profile = profile
+        for stage in self.pupil_stages:
+            if isinstance(stage, LinearPhaseLowpass):
+                stage.profile = profile
 
     def add_breath(self, unix_time: float, pressure: float) -> None:
         parsed = _pair(unix_time, pressure)
@@ -704,10 +601,10 @@ class RollingHistory:
         """The last window, on one 10 hertz grid, with each path's delay removed.
 
         The grid ends at the latest time where breathing, pupil diameter,
-        and both envelopes are all present. That time is a few hundred
-        milliseconds behind the newest packet, because the envelopes take
-        the longest to come out of their filters. Samples inside a long
-        gap are not-a-number, and ``valid`` is false there.
+        and both envelopes are all present. That time sits behind the newest
+        packet by the longest filter delay. Samples inside a long gap are
+        not-a-number, and ``valid`` is false there. The result is approximate:
+        it is the live display path, not the post-session reference.
         """
         with self._lock:
             breath = list(self._breath)
@@ -716,9 +613,10 @@ class RollingHistory:
             window_seconds = self._window_seconds
             channels = self._eeg_channels
             stages = list(self.pupil_stages)
+            profile = self._filter_profile
 
         if not breath or not pupil or not eeg:
-            return _empty_window(stages)
+            return _empty_window(stages, profile=profile)
 
         # The buffer keeps the longest window. Filtering only needs this
         # window plus the warm-up, so a 30 second window does less work
@@ -728,9 +626,9 @@ class RollingHistory:
         pupil = _recent(pupil, keep)
         eeg = _recent(eeg, keep)
 
-        breath_times, breath_values, breath_delay = _breath_path(breath)
+        breath_times, breath_values, breath_delay = _breath_path(breath, profile)
         pupil_times, pupil_values, pupil_delay, stage_delays = _pupil_path(pupil, stages)
-        eeg_times, delta, alpha, delta_delay, alpha_delay = _eeg_path(eeg, channels)
+        eeg_times, delta, alpha, delta_delay, alpha_delay = _eeg_path(eeg, channels, profile)
 
         paths = (
             (breath_times, breath_values, breath_delay),
@@ -750,7 +648,7 @@ class RollingHistory:
             alpha_delay,
         )
         if grid is None:
-            return _empty_window(stages, stage_delays, breath_delay, pupil_delay, delta_delay, alpha_delay)
+            return _empty_window(stages, stage_delays, breath_delay, pupil_delay, delta_delay, alpha_delay, profile)
 
         breathing = onto_grid(grid, breath_times, breath_values, breath_delay)
         pupil_diameter = onto_grid(grid, pupil_times, pupil_values, pupil_delay)
@@ -780,6 +678,7 @@ class RollingHistory:
             valid=valid,
             delays_seconds=delays,
             pupil_stage_delays_seconds=tuple(stage_delays),
+            filter_profile=profile,
         )
 
 
@@ -817,6 +716,7 @@ def _empty_window(
     pupil_delay=float("nan"),
     delta_delay=float("nan"),
     alpha_delay=float("nan"),
+    profile=DEFAULT_FILTER_PROFILE,
 ):
     if stage_delays is None:
         stage_delays = tuple((stage.name, float(getattr(stage, "delay_s", 0.0))) for stage in stages)
@@ -836,13 +736,58 @@ def _empty_window(
             "alpha envelope": float(alpha_delay) if alpha_delay is not None else float("nan"),
         },
         pupil_stage_delays_seconds=tuple(stage_delays),
+        filter_profile=profile,
     )
 
 
-def _breath_path(samples):
+def align_arrays(breath_samples, pupil_samples, eeg_samples, profile=DEFAULT_FILTER_PROFILE, eeg_channels=DEFAULT_EEG_CHANNELS):
+    """The whole overlap of the three signals on a 10 hertz grid.
+
+    This is the same filtering as ``resample``, without cutting to the last
+    N seconds. It is what the agreement study uses to compare filter profiles.
+    """
+    breath_times, breath_values, breath_delay = _breath_path(breath_samples, profile)
+    pupil_times, pupil_values, pupil_delay, _stage_delays = _pupil_path(
+        pupil_samples, default_pupil_stages(profile)
+    )
+    eeg_times, delta, alpha, delta_delay, alpha_delay = _eeg_path(eeg_samples, eeg_channels, profile)
+    paths = (
+        (breath_times, breath_values, breath_delay),
+        (pupil_times, pupil_values, pupil_delay),
+        (eeg_times, delta, delta_delay),
+        (eeg_times, alpha, alpha_delay),
+    )
+    if any(times is None or not math.isfinite(delay) for times, _values, delay in paths):
+        raise ValueError("One of the signals could not be filtered.")
+    start = max(float(np.min(times[np.isfinite(values)] - delay)) for times, values, delay in paths if np.any(np.isfinite(values)))
+    end = min(float(np.max(times[np.isfinite(values)] - delay)) for times, values, delay in paths if np.any(np.isfinite(values)))
+    grid = _output_grid(end, end - start)
+    breathing = onto_grid(grid, breath_times, breath_values, breath_delay)
+    pupil = onto_grid(grid, pupil_times, pupil_values, pupil_delay)
+    delta_on = onto_grid(grid, eeg_times, delta, delta_delay)
+    alpha_on = onto_grid(grid, eeg_times, alpha, alpha_delay)
+    ratio = _ratio(delta_on, alpha_on)
+    return {
+        "time": grid,
+        "breathing": breathing,
+        "pupil diameter": pupil,
+        "delta": delta_on,
+        "alpha": alpha_on,
+        "delta-to-alpha": ratio,
+        "delays_seconds": {
+            "breathing": float(breath_delay),
+            "pupil diameter": float(pupil_delay),
+            "delta envelope": float(delta_delay),
+            "alpha envelope": float(alpha_delay),
+        },
+        "filter_profile": profile,
+    }
+
+
+def _breath_path(samples, profile):
     times = np.array([sample[0] for sample in samples], dtype=float)
     values = np.array([sample[1] for sample in samples], dtype=float)
-    filtered_times, filtered, delay = causal_lowpass(times, values)
+    filtered_times, filtered, delay = linear_phase_lowpass(times, values, profile=profile)
     if filtered_times.size == 0:
         return None, None, float("nan")
     return filtered_times, filtered, delay
@@ -863,7 +808,7 @@ def _pupil_path(samples, stages):
     return times, values, total, tuple(stage_delays)
 
 
-def _eeg_path(samples, channel_names):
+def _eeg_path(samples, channel_names, profile):
     times = np.array([sample[0] for sample in samples], dtype=float)
     order = np.argsort(times, kind="mergesort")
     times = times[order]
@@ -890,8 +835,8 @@ def _eeg_path(samples, channel_names):
         uniform = interpolate_with_gaps(times, raw, grid, max_gap)
         if not np.any(np.isfinite(uniform)):
             continue
-        delta = _band_envelope(uniform, sample_rate, DELTA_BAND_HZ[0], DELTA_BAND_HZ[1])
-        alpha = _band_envelope(uniform, sample_rate, ALPHA_BAND_HZ[0], ALPHA_BAND_HZ[1])
+        delta = _band_envelope(uniform, sample_rate, "delta", profile)
+        alpha = _band_envelope(uniform, sample_rate, "alpha", profile)
         if delta is not None:
             delta_columns.append(delta[0])
             delta_delay = delta[1]

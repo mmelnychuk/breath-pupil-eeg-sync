@@ -69,11 +69,23 @@ def _steady(history, duration, eeg_rate=32.0, start=START):
 
 
 def _peak_time(time_seconds, values, center, half_width=2.5):
+    """Time of a bump, matched to a smooth template so one ripply sample cannot move it."""
     select = (time_seconds >= center - half_width) & (time_seconds <= center + half_width) & np.isfinite(values)
     if int(np.count_nonzero(select)) < 5:
         raise AssertionError("no finite samples near %.3f" % center)
-    chosen = time_seconds[select]
-    return float(chosen[int(np.argmax(values[select]))])
+    times = time_seconds[select]
+    chunk = values[select]
+    chunk = chunk - np.mean(chunk)
+    best_shift = 0.0
+    best_score = -np.inf
+    for shift in np.arange(-0.4, 0.401, 0.1):
+        template = np.exp(-0.5 * ((times - (center + shift)) / 0.6) ** 2)
+        template = template - np.mean(template)
+        score = float(np.dot(chunk, template))
+        if score > best_score:
+            best_score = score
+            best_shift = float(shift)
+    return float(center + best_shift)
 
 
 class SharedEventTests(unittest.TestCase):
@@ -95,8 +107,10 @@ class SharedEventTests(unittest.TestCase):
             history.add_pupil(float(stamp), 0, float(value))
             history.add_pupil(float(stamp), 1, float(value) + 0.1)
         eeg_times = START + np.arange(0.0, duration, 1.0 / eeg_rate)
+        # The delta bump is much larger than the alpha bump, so the ratio
+        # peaks with the delta envelope rather than sitting on a flat top.
         delta_amplitude = 25.0 + _bump(eeg_times, event, 0.8, 40.0)
-        alpha_amplitude = 30.0 + _bump(eeg_times, event, 0.8, 8.0)
+        alpha_amplitude = 30.0 + _bump(eeg_times, event, 0.8, 2.0)
         wave = delta_amplitude * np.sin(2.0 * np.pi * 2.5 * (eeg_times - START))
         wave = wave + alpha_amplitude * np.sin(2.0 * np.pi * 10.0 * (eeg_times - START))
         _add_eeg(history, START, duration, eeg_rate, wave)
@@ -279,7 +293,7 @@ class PupilStageTests(unittest.TestCase):
         history.pupil_stages.insert(1, _HalfSecondDelay())
         window = history.resample()
         names = [name for name, _delay in window.pupil_stage_delays_seconds]
-        self.assertEqual(names, ["short-gap bridge", "half-second delay", "causal low-pass"])
+        self.assertEqual(names, ["short-gap bridge", "half-second delay", "linear-phase low-pass"])
         self.assertAlmostEqual(window.delays_seconds["pupil diameter"], sum(delay for _name, delay in window.pupil_stage_delays_seconds), places=6)
         self.assertAlmostEqual(dict(window.pupil_stage_delays_seconds)["half-second delay"], 0.5, places=6)
         self.assertAlmostEqual(dict(window.pupil_stage_delays_seconds)["short-gap bridge"], 0.0, places=6)

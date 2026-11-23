@@ -14,7 +14,8 @@ from sniff_sync.diameter import sample_from_pupil_message
 from sniff_sync.trigger import DEFAULT_PORT
 from sniff_sync.feed import Feed
 from sniff_sync.pupil_link import PupilLink
-from sniff_sync.records import BreathingLog, EegLog, Trigger, new_trigger_id
+from sniff_sync.coupling import LiveCoupling
+from sniff_sync.records import BreathingLog, EegLog, PupilDiameterLog, Trigger, new_trigger_id
 from sniff_sync.rolling import RollingHistory
 
 log = logging.getLogger("sniff_sync")
@@ -28,16 +29,20 @@ class Hub:
         port: int = DEFAULT_PORT,
         feed: Feed | None = None,
         history: RollingHistory | None = None,
+        enable_coupling: bool = True,
     ):
         self.session = Path(session)
         self.session.mkdir(parents=True, exist_ok=True)
         self.breathing = BreathingLog(self.session / "breathing.csv")
         self.eeg = EegLog(self.session / "eeg.csv")
+        self.pupil_diameter = PupilDiameterLog(self.session / "pupil_diameter.csv")
         self.pupil = PupilLink(port=pupil_port)
         self.feed = feed if feed is not None else Feed()
         # Longer than the plot. The plot keeps 20 seconds; this keeps the
         # coupling window. resample() is not called from the live loop.
         self.history = history if history is not None else RollingHistory()
+        self.coupling = LiveCoupling(self.history, self.session)
+        self._enable_coupling = bool(enable_coupling)
         self.port = port
         self._ctx = None
         self._rep = None
@@ -63,6 +68,8 @@ class Hub:
             self._threads.append(threading.Thread(target=self._diameters, name="pupil-diameter", daemon=True))
         for thread in self._threads:
             thread.start()
+        if self._enable_coupling:
+            self.coupling.start()
 
     def accept(self, label: str) -> Trigger:
         """Stamp one label on arrival and fan it out. This is the hub side of trigger(label)."""
@@ -106,9 +113,15 @@ class Hub:
                 continue
             self.feed.add_pupil(unix, sample["eye"], sample["diameter"])
             self.history.add_pupil(unix, sample["eye"], sample["diameter"])
+            self.pupil_diameter.write_sample(unix, sample["eye"], sample["diameter"])
+
+    def latest_coupling(self) -> dict:
+        """The most recent live coupling result. It is approximate, and may still be warming up."""
+        return self.coupling.latest()
 
     def close(self) -> None:
         self._stop.set()
+        self.coupling.stop()
         for thread in self._threads:
             thread.join(timeout=2)
         if self._rep is not None:
@@ -118,3 +131,4 @@ class Hub:
         self.pupil.close()
         self.breathing.close()
         self.eeg.close()
+        self.pupil_diameter.close()

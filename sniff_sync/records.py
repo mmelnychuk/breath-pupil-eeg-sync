@@ -84,6 +84,28 @@ class BreathingLog(_Csv):
         )
 
 
+class PupilDiameterLog(_Csv):
+    """Continuous pupil diameter, in millimetres, on Unix time.
+
+    The live view already receives these samples. This file keeps them so
+    the post-session reference can read the same diameters. Eye is 0 or 1.
+    """
+
+    columns = ["unix_time", "eye", "diameter_mm"]
+
+    def __init__(self, path):
+        super().__init__(Path(path), self.columns)
+
+    def write_sample(self, unix_time: float, eye: int, diameter_mm: float) -> None:
+        self.write(
+            {
+                "unix_time": format_timestamp(unix_time),
+                "eye": str(int(eye)),
+                "diameter_mm": format(float(diameter_mm), ".6f"),
+            }
+        )
+
+
 class EegLog(_Csv):
     """EEG samples and trigger markers in one file, on Unix time.
 

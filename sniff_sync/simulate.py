@@ -24,9 +24,10 @@ if str(_PLUGIN_DIR) not in sys.path:
 
 
 class Session:
-    def __init__(self, directory, port: int = 0):
+    def __init__(self, directory, port: int = 0, enable_coupling: bool = True):
         self.directory = Path(directory)
         self._port = port
+        self._enable_coupling = enable_coupling
         self.directory.mkdir(parents=True, exist_ok=True)
         self.feed = Feed()
         self.mock = MockPupil()
@@ -37,7 +38,13 @@ class Session:
 
     def start(self) -> Hub:
         self.mock.start()
-        self.hub = Hub(self.directory, pupil_port=self.mock.port, port=self._port, feed=self.feed)
+        self.hub = Hub(
+            self.directory,
+            pupil_port=self.mock.port,
+            port=self._port,
+            feed=self.feed,
+            enable_coupling=self._enable_coupling,
+        )
         self.hub.start()
         os.environ["SNIFF_SYNC_PORT"] = str(self.hub.port)
         self._plugin = _Bridge(self.mock, self.directory / "pupil_recording", self._stop)
