@@ -98,10 +98,23 @@ python -m sniff_sync.check recordings/sim
 Tests, also with no hardware:
 
 ```bash
+pip install -e '.[analysis]'
 python -m unittest discover -s tests
 ```
 
-## Nonlinear interdependence
+## Offline coupling analysis
+
+After a session, nearest-neighbour interdependence among breathing, pupil diameter, and the electroencephalography can be estimated without starting the hub:
+
+```bash
+python -m sniff_sync.nlid recordings/P01
+```
+
+The live hub plots pupil diameter but does not save it. Put a Pupil Core `pupil_positions.csv` in the session (or pass `--pupil`). If that file is still on Pupil's clock, pass `--pupil-offset` as the offset the hub printed (pupil time minus Unix time).
+
+Electroencephalography is not used raw. Each channel is split into delta, theta, alpha, beta, and low gamma; the squared Hilbert amplitude is smoothed; and every ratio of those powers is kept as a candidate attentional signal. The default channels are the frontal set AF3, AF4, F3, F4 (this headset has no Fz). Delta/alpha is not treated as special.
+
+The table and the figure land in `recordings/P01/nlid/`. The measures, the conditional test that separates a direct breathing–attention link from one that only passes through pupil diameter, and the partial cross mapping comparison are written out in [docs/nonlinear_interdependence.md](docs/nonlinear_interdependence.md).
 
 Performance of pairwise M, conditional M and partial cross mapping on simulated data from the 2018 coupled-oscillator model is in [docs/nlid-performance-report.md](docs/nlid-performance-report.md).
 
