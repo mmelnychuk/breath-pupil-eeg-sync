@@ -101,6 +101,10 @@ Tests, also with no hardware:
 python -m unittest discover -s tests
 ```
 
+## Nonlinear interdependence
+
+Performance of pairwise M, conditional M and partial cross mapping on simulated data from the 2018 coupled-oscillator model is in [docs/nlid-performance-report.md](docs/nlid-performance-report.md).
+
 ## On the real rig
 
 - The sniff serial port in `getSniffs.py` is hard-coded. If the device name changed, `ls /dev/tty*` and update that path. The hub does not open the serial port.
