@@ -13,6 +13,8 @@ dependencies = [
     "msgpack>=1.0",
     "pyqtgraph>=0.13",
     "PySide6>=6.5",
+    "numpy>=1.22",
+    "scipy>=1.9",
 ]
 
 [project.optional-dependencies]

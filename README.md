@@ -80,6 +80,44 @@ The window is split left and right.
 
 Triggers are marked on the polar plot and as vertical lines on the pupil and EEG panels. A later dynamical-system panel is another `add_panel()` call on the same window.
 
+## Aligned window
+
+The live plot keeps about 20 seconds. A coupling window is longer than that, so a second buffer keeps the raw samples. It is filled from the same three places as the plot: the nasal-pressure file, the pupil-diameter messages, and the electroencephalography (EEG) packets. The plot still keeps 20 seconds. This buffer is not drawn yet.
+
+Ask for the window when you want it, about once a second. On a running hub that is:
+
+```python
+window = hub.history.resample()
+```
+
+`hub` is the `Hub` the program already builds. `window.time_seconds` is Unix time, one sample every 0.1 seconds (10 hertz). The other fields are on that same grid.
+
+| Field | What it is |
+| --- | --- |
+| `breathing` | Nasal pressure, in the units of the file. |
+| `pupil_diameter` | Pupil diameter in millimetres. Both eyes when both are present, otherwise the eye that is present. |
+| `delta_envelope` | Amplitude of the 1 to 4 hertz band. |
+| `alpha_envelope` | Amplitude of the 8 to 12 hertz band. |
+| `delta_to_alpha` | The delta envelope divided by the alpha envelope. |
+| `valid` | True only where all five of those have a number. |
+| `delays_seconds` | How far each path was shifted earlier, in seconds. |
+
+A missing sample is not-a-number in its own array, and `valid` is false there. The length defaults to 60 seconds. `hub.history.set_window_seconds(45)` accepts any length from 30 to 120 seconds. The buffer keeps 120 seconds plus 8 seconds of filter warm-up whatever length you have selected, so raising the length does not start from an empty buffer. NumPy and SciPy do the filtering. They are installed with the package.
+
+Breathing goes through a forward low-pass filter at 4 hertz, then onto the grid. Forward means each output sample uses the current input and inputs that have already arrived, not inputs that are still in the future. The low-pass is what stops higher frequencies from folding into the 10 hertz grid.
+
+The pupil path is a short list of steps, `hub.history.pupil_stages`. Each step has a name and a `delay_s`, and the names and delays come back on `window.pupil_stage_delays_seconds`. The first step fills a hole of up to 0.20 seconds with a straight line and adds no delay. A longer hole is left missing. The second step is the same kind of low-pass used for breathing. Blink correction is not one of these steps. To add it later, insert a step between those two. The step should leave its values lined up with the times it was given, and set `delay_s` to the number of seconds it shifts the diameter later. The resampler adds that to the pupil delay and shifts the timestamps back.
+
+Electroencephalography is not used as the raw trace. The default channels are AF3, AF4, F3 and F4. The original EPOC headset has no electrode at Fz. These four are the frontal ones, AF3 and F3 on the left and AF4 and F4 on the right. F7 and F8 sit further to the side and pick up more muscle activity. FC5 and FC6 sit lower, toward the motor strip. `hub.history.eeg_channels = ("F3", "F4")` selects a different subset. Each selected channel is band-pass filtered, the amplitude is taken with a forward smoother at 1 hertz, and the channels are averaged. A sine wave of amplitude A comes back near A. The alpha value in the ratio is not allowed to fall below one thousandth of the median alpha in the window, so a near-zero alpha does not send the ratio off to infinity.
+
+A forward filter delays what comes out of it. Breathing and pupil diameter are shifted by the group delay of their low-pass at 0.25 hertz, which is about the rate of a breath. Each envelope is shifted by the average group delay of its band-pass across that band, plus the group delay of the 1 hertz smoother at 0.25 hertz. For a 128 hertz electroencephalography stream, a 20 hertz nasal-pressure stream, and a 120 hertz pupil stream, those delays are 48.9 milliseconds for breathing, 56.3 milliseconds for pupil diameter, 406.5 milliseconds for the delta envelope, and 363.0 milliseconds for the alpha envelope. A 32 hertz simulated electroencephalography stream is within a few milliseconds of the same envelope delays. The numbers that were actually used are always in `window.delays_seconds`, because they move a little when the sample rate moves. The grid stops at the latest time for which breathing, pupil diameter, and both envelopes are all present. That is a few hundred milliseconds behind the newest packet, set by the slower envelope. The same lag on every signal is acceptable for a display. A different lag on one signal would bias the direction of coupling.
+
+The group delay inside the delta band is not flat. It is shorter near 4 hertz than near 1 hertz, by a few tenths of a second. The single delta delay above is the average across 1 to 4 hertz. A burst that sits at one edge of that band can still be early or late by more than one sample of this grid. The alpha band is flatter.
+
+One or two missed samples in breathing or in the electroencephalography are filled with a straight line. A longer hole stays missing. After a hole the filters start again, and the stretch while they settle stays missing too. That settling is about a third of a second for the low-pass and about two seconds for the envelopes.
+
+The call is meant to be made about once a second. With a 128 hertz electroencephalography stream, a 120 hertz pupil stream and a 20 hertz nasal-pressure stream, one call took 9 milliseconds for a 30 second window, 15 milliseconds for 60 seconds, and 27 milliseconds for 120 seconds. Using all fourteen channels for a 60 second window took 32 milliseconds.
+
 ## Simulated session
 
 No sensor, no glasses, no headset:

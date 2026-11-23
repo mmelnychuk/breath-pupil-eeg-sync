@@ -15,18 +15,29 @@ from sniff_sync.trigger import DEFAULT_PORT
 from sniff_sync.feed import Feed
 from sniff_sync.pupil_link import PupilLink
 from sniff_sync.records import BreathingLog, EegLog, Trigger, new_trigger_id
+from sniff_sync.rolling import RollingHistory
 
 log = logging.getLogger("sniff_sync")
 
 
 class Hub:
-    def __init__(self, session, pupil_port: int = 50020, port: int = DEFAULT_PORT, feed: Feed | None = None):
+    def __init__(
+        self,
+        session,
+        pupil_port: int = 50020,
+        port: int = DEFAULT_PORT,
+        feed: Feed | None = None,
+        history: RollingHistory | None = None,
+    ):
         self.session = Path(session)
         self.session.mkdir(parents=True, exist_ok=True)
         self.breathing = BreathingLog(self.session / "breathing.csv")
         self.eeg = EegLog(self.session / "eeg.csv")
         self.pupil = PupilLink(port=pupil_port)
         self.feed = feed if feed is not None else Feed()
+        # Longer than the plot. The plot keeps 20 seconds; this keeps the
+        # coupling window. resample() is not called from the live loop.
+        self.history = history if history is not None else RollingHistory()
         self.port = port
         self._ctx = None
         self._rep = None
@@ -61,6 +72,7 @@ class Hub:
         self.eeg.write_trigger(event)
         self.pupil.send_trigger(event)
         self.feed.add_trigger(event.unix_time, event.label, event.trigger_id)
+        self.history.add_trigger(event.unix_time, event.label)
         log.info("trigger %s %s at %.6f", event.trigger_id, event.label, event.unix_time)
         return event
 
@@ -93,6 +105,7 @@ class Hub:
             if unix is None:
                 continue
             self.feed.add_pupil(unix, sample["eye"], sample["diameter"])
+            self.history.add_pupil(unix, sample["eye"], sample["diameter"])
 
     def close(self) -> None:
         self._stop.set()
