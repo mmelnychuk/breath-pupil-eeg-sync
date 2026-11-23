@@ -81,7 +81,7 @@ The window is split left and right.
 - Right, top: pupil diameter for eye 0 and eye 1, in millimetres when the 3d detector is on. Gaze position is not plotted.
 - Right, bottom: the EEG channels. Each channel has a checkbox. A switch chooses raw sensor values or power in the 8–12 Hz band. The axis is Unix time in seconds.
 
-Triggers are marked on the polar plot and as vertical lines on the pupil and EEG panels. A later dynamical-system panel is another `add_panel()` call on the same window.
+Triggers are marked on the polar plot and as vertical lines on the pupil and electroencephalography panels. The directed coupling panel sits under those plots. It is another `add_panel()` call on the same window, and it does not redraw the polar, pupil, or electroencephalography traces.
 
 ## Aligned window
 
@@ -163,6 +163,28 @@ python -m sniff_sync.reference recordings/P01
 ```
 
 On synthetic signals where breathing drives the delta amplitude, the live scores and this reference called breathing → electroencephalography on every window. The correlation of that score was 0.99 and the typical difference was 0.005. The clean linear-phase set, which is not what the display uses, differed from the reference by about 0.0004 on the same arrow. A simulated session whose three oscillators are not built to drive one another did not keep a stable direction: the weak scores from the live filters and from the reference did not match. That is disagreement on noise, not a reversal of a real drive.
+
+Recency weighting is off unless the live panel turns it on. Neighbours are still searched across the whole window. When the per-reference-point values are averaged into the window score, each reference point gets an exponentially decaying weight. The newest point has weight 1, and a point one half-life older has weight one half. The half-life defaults to 10 seconds. The approximate file records whether weighting was on and what half-life was used. The reference pass reads those two columns and uses the same weighting, so a live window and its reference window stay comparable.
+
+## Directed coupling panel
+
+The live window has a panel titled Directed coupling. The heading on the panel is "Directed coupling (live, approximate)", because these scores use the short linear-phase filters. The panel reads `hub.latest_coupling()` on the same timer as the other plots. It does not run the neighbour search itself.
+
+Two grids sit side by side. The left grid is conditional nonlinear interdependence. The right grid is forward forecast gain. Columns are the source and rows are the target. The diagonal is blank. Each of the six off-diagonal cells shows the score, and the larger direction of a pair is marked "stronger". Warm colours are positive scores and blue is a negative score. A weak or near-zero score is drawn faded. Hovering a cell shows the exact unsmoothed numbers for both measures, the window length, and the status.
+
+To the right, three nodes (Breathing, Pupil diameter, and Electroencephalography) are joined by curved arrows. Arrow colour follows the sign of the forward forecast gain, warm for a positive score and blue for a negative score. Arrow thickness follows how large that score is and which direction of the pair is larger, so a weak or losing direction is faded and the dominant direction stays easy to see. Hovering an arrow shows the forward forecast gain and the conditional nonlinear interdependence for both directions of that pair.
+
+The numbers drawn in the cells and the arrows are smoothed with an exponential moving average whose half-life is 3 seconds. A new ready result moves the picture part of the way toward that result, so the panel does not jump every second. `coupling_approximate.csv` keeps the unsmoothed worker scores. The hover text shows those unsmoothed numbers.
+
+Until the first baseline window is ready, the panel says "Warming up" and the cells stay blank. When a window has too many missing samples, the panel says "Skipped" and includes the reason.
+
+The control row has three settings, and each one takes effect on the next score:
+
+- Electroencephalography signal: delta-to-alpha ratio (the default), delta (1 to 4 hertz), or alpha (8 to 12 hertz).
+- Window length, from 30 to 120 seconds, default 60. This is the same length the aligned window uses.
+- Recency weighting, off by default, with an exponential half-life that defaults to 10 seconds. The half-life control is available only while weighting is on.
+
+Significance tests are not shown. The fading used for a weak score is also where a later test can fade a link it calls non-significant, without changing the layout.
 
 ## Simulated session
 

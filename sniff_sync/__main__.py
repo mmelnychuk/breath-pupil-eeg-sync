@@ -45,7 +45,7 @@ def main(argv=None) -> int:
             from sniff_sync.viz import Monitor
 
             app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-            window = Monitor(session.feed)
+            window = Monitor(session.feed, coupling=session.hub.coupling)
             window.show()
         try:
             if args.seconds > 0 and window is None:
@@ -122,7 +122,7 @@ def main(argv=None) -> int:
                 time.sleep(0.2)
         from sniff_sync.viz import open_monitor
 
-        open_monitor(feed)
+        open_monitor(feed, coupling=hub.coupling)
     except KeyboardInterrupt:
         pass
     finally:

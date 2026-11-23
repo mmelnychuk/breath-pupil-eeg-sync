@@ -229,6 +229,10 @@ def write_reference(session, pupil_path=None, pupil_offset=None, channels=None):
                 "pool_size": int(float(row["pool_size"])) if row.get("pool_size") else 40,
                 "horizon_samples": int(float(row["horizon_samples"])) if row.get("horizon_samples") else 4,
                 "surrogates": (row.get("surrogates") or "") == "yes",
+                "recency_weighting": (row.get("recency_weighting") or "") == "yes",
+                "recency_half_life_seconds": float(row["recency_half_life_seconds"])
+                if (row.get("recency_half_life_seconds") or "") != ""
+                else 10.0,
                 "interdependence": {},
                 "forecast_gain": {},
                 "directions": {},
@@ -262,6 +266,9 @@ def write_reference(session, pupil_path=None, pupil_offset=None, channels=None):
                     neighbor_count=result["neighbor_count"],
                     pool_size=result["pool_size"],
                     horizon_samples=result["horizon_samples"],
+                    recency_half_life_seconds=(
+                        result["recency_half_life_seconds"] if result["recency_weighting"] else None
+                    ),
                 )
             except ValueError as exc:
                 result["reason"] = "The reference score failed: %s" % exc

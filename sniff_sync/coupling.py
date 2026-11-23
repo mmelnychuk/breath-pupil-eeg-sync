@@ -29,6 +29,7 @@ NEIGHBOR_COUNT = 8
 POOL_SIZE = 40
 HORIZON_SECONDS = 0.4
 HORIZON_SAMPLES = 4
+DEFAULT_RECENCY_HALF_LIFE_SECONDS = 10.0
 # A baseline needs a long stretch of real samples before the embedding is fixed.
 BASELINE_SECONDS = 20.0
 MINIMUM_VALID_FRACTION = 0.80
@@ -63,7 +64,14 @@ def _finite_series(values, mask):
     return piece
 
 
-def score_triplet(series, embedding, neighbor_count=NEIGHBOR_COUNT, pool_size=POOL_SIZE, horizon_samples=HORIZON_SAMPLES):
+def score_triplet(
+    series,
+    embedding,
+    neighbor_count=NEIGHBOR_COUNT,
+    pool_size=POOL_SIZE,
+    horizon_samples=HORIZON_SAMPLES,
+    recency_half_life_seconds=None,
+):
     """Conditional interdependence and forecast gain for all six directions.
 
     ``series`` maps the three plain names to one-dimensional arrays on the
@@ -102,6 +110,8 @@ def score_triplet(series, embedding, neighbor_count=NEIGHBOR_COUNT, pool_size=PO
                 neighbor_count,
                 pool_size,
                 theiler,
+                recency_half_life_seconds=recency_half_life_seconds,
+                sample_rate_hz=OUTPUT_RATE_HZ,
             )
             gained = prediction_gain(
                 series[target],
@@ -113,6 +123,8 @@ def score_triplet(series, embedding, neighbor_count=NEIGHBOR_COUNT, pool_size=PO
                 pool_size,
                 theiler,
                 (int(horizon_samples),),
+                recency_half_life_seconds=recency_half_life_seconds,
+                sample_rate_hz=OUTPUT_RATE_HZ,
             )
             interdependence[arrow] = float(conditional["conditional_andrzejak_M"])
             forecast[arrow] = float(gained["prediction_gain"])
@@ -242,12 +254,16 @@ class _WorkerMemory:
             result["status"] = "skipped"
             result["reason"] = "This window was skipped because the complete stretch still has a missing sample."
             return result
+        half_life = None
+        if job.get("recency_weighting"):
+            half_life = float(job.get("recency_half_life_seconds") or DEFAULT_RECENCY_HALF_LIFE_SECONDS)
         interdependence, forecast, theiler = score_triplet(
             series,
             self.embedding,
             neighbor_count=int(job.get("neighbor_count", NEIGHBOR_COUNT)),
             pool_size=int(job.get("pool_size", POOL_SIZE)),
             horizon_samples=int(job.get("horizon_samples", HORIZON_SAMPLES)),
+            recency_half_life_seconds=half_life,
         )
         result["status"] = "ready"
         result["reason"] = ""
@@ -293,6 +309,8 @@ def _blank_result(job):
         "horizon_seconds": HORIZON_SECONDS,
         "horizon_samples": int(job.get("horizon_samples", HORIZON_SAMPLES)),
         "surrogates": bool(job.get("surrogates", False)),
+        "recency_weighting": bool(job.get("recency_weighting", False)),
+        "recency_half_life_seconds": float(job.get("recency_half_life_seconds") or DEFAULT_RECENCY_HALF_LIFE_SECONDS),
         "interdependence": {},
         "forecast_gain": {},
         "directions": {},
@@ -334,6 +352,8 @@ class LiveCoupling:
         self.pool_size = POOL_SIZE
         self.horizon_samples = HORIZON_SAMPLES
         self.surrogates = False
+        self.recency_weighting = False
+        self.recency_half_life_seconds = DEFAULT_RECENCY_HALF_LIFE_SECONDS
         self.hand_embedding = None
         self._context = multiprocessing.get_context("spawn")
         self._jobs = None
@@ -471,6 +491,8 @@ class LiveCoupling:
             "pool_size": self.pool_size,
             "horizon_samples": self.horizon_samples,
             "surrogates": bool(self.surrogates),
+            "recency_weighting": bool(self.recency_weighting),
+            "recency_half_life_seconds": float(self.recency_half_life_seconds),
             "hand_embedding": self.hand_embedding,
             "delays_seconds": dict(window.delays_seconds),
         }
@@ -532,6 +554,8 @@ LOG_COLUMNS = (
         "pool_size",
         "horizon_samples",
         "surrogates",
+        "recency_weighting",
+        "recency_half_life_seconds",
         "valid_fraction",
         "compute_seconds",
         "theiler_window_samples",
@@ -566,6 +590,8 @@ def _log_row(result) -> dict:
     row["pool_size"] = result.get("pool_size", "")
     row["horizon_samples"] = result.get("horizon_samples", "")
     row["surrogates"] = "yes" if result.get("surrogates") else "no"
+    row["recency_weighting"] = "yes" if result.get("recency_weighting") else "no"
+    row["recency_half_life_seconds"] = _number(result.get("recency_half_life_seconds"))
     row["valid_fraction"] = _number(result.get("valid_fraction"))
     row["compute_seconds"] = _number(result.get("compute_seconds"))
     row["theiler_window_samples"] = result.get("theiler_window_samples", "")
