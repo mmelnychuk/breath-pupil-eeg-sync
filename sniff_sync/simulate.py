@@ -24,9 +24,10 @@ if str(_PLUGIN_DIR) not in sys.path:
 
 
 class Session:
-    def __init__(self, directory, port: int = 0):
+    def __init__(self, directory, port: int = 0, enable_coupling: bool = True):
         self.directory = Path(directory)
         self._port = port
+        self._enable_coupling = enable_coupling
         self.directory.mkdir(parents=True, exist_ok=True)
         self.feed = Feed()
         self.mock = MockPupil()
@@ -37,7 +38,13 @@ class Session:
 
     def start(self) -> Hub:
         self.mock.start()
-        self.hub = Hub(self.directory, pupil_port=self.mock.port, port=self._port, feed=self.feed)
+        self.hub = Hub(
+            self.directory,
+            pupil_port=self.mock.port,
+            port=self._port,
+            feed=self.feed,
+            enable_coupling=self._enable_coupling,
+        )
         self.hub.start()
         os.environ["SNIFF_SYNC_PORT"] = str(self.hub.port)
         self._plugin = _Bridge(self.mock, self.directory / "pupil_recording", self._stop)
@@ -60,6 +67,7 @@ class Session:
                 unix = time.time()
                 self.hub.breathing.write_sample(unix, pressure)
                 self.feed.add_breath(unix, pressure)
+                self.hub.history.add_breath(unix, pressure)
                 next_breath += 0.05
             if now >= next_pupil:
                 for eye in (0, 1):
@@ -79,12 +87,22 @@ class Session:
                     )
                 next_pupil += 1.0 / 40.0
             if now >= next_eeg:
+                # A 2 hertz wave and a 10 hertz wave, with amplitudes that
+                # change over tens of seconds. Those sit in the delta band
+                # (1 to 4 hertz) and the alpha band (8 to 12 hertz). The
+                # stand-in is 32 samples per second; a real headset is 128.
                 unix = time.time()
-                channels = {}
-                for index, name in enumerate(EPOC_CHANNELS):
-                    channels[name] = 400.0 + 30.0 * math.sin(2 * math.pi * (8 + index) * now)
+                delta_amplitude = 40.0 + 20.0 * math.sin(2 * math.pi * 0.05 * now)
+                alpha_amplitude = 25.0 + 15.0 * math.sin(2 * math.pi * 0.08 * now + 1.0)
+                sample = (
+                    400.0
+                    + delta_amplitude * math.sin(2 * math.pi * 2.0 * now)
+                    + alpha_amplitude * math.sin(2 * math.pi * 10.0 * now)
+                )
+                channels = {name: sample for name in EPOC_CHANNELS}
                 self.hub.eeg.write_sample(unix, channels, counter=counter)
                 self.feed.add_eeg(unix, channels)
+                self.hub.history.add_eeg(unix, channels)
                 counter += 1
                 next_eeg += 1.0 / 32.0
             self._stop.wait(0.01)

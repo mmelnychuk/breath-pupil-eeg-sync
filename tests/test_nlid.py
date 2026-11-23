@@ -199,7 +199,9 @@ class CommandTests(unittest.TestCase):
             session = Session(root)
             session.start()
             try:
-                time.sleep(8)
+                # Eight seconds can leave fewer samples than the forecast pool
+                # once the embedding delay is long. Twenty seconds stays above that.
+                time.sleep(20)
             finally:
                 session.stop()
             times, _pressure = load_breathing(root / "breathing.csv")

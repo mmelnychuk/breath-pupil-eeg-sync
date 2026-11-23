@@ -9,7 +9,7 @@ panel can hide individual channels and can show raw sensor values or
 Times on the pupil and EEG panels are Unix seconds. Trigger markers are
 drawn on the polar plot and as vertical lines on the time panels.
 
-Another panel, such as a dynamical-system view, is one add_panel() call.
+The directed coupling panel is one add_panel() call along the bottom.
 """
 
 from __future__ import annotations
@@ -23,12 +23,12 @@ from sniff_sync.eeg_channels import EPOC_CHANNELS
 _EEG_STEP = 80.0
 
 
-def open_monitor(feed):
+def open_monitor(feed, coupling=None):
     """Open the window and block until it is closed."""
     from PySide6 import QtWidgets
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    window = Monitor(feed)
+    window = Monitor(feed, coupling=coupling)
     window.show()
     app.exec()
     return window
@@ -106,19 +106,26 @@ def band_power_trace(times, values, low_hz=8.0, high_hz=12.0):
 class Monitor:
     """Qt window. Constructing it needs a display, or the offscreen platform."""
 
-    def __init__(self, feed):
+    def __init__(self, feed, coupling=None):
         import pyqtgraph as pg
         from PySide6 import QtCore
         from PySide6 import QtWidgets
 
         self.feed = feed
+        self.coupling = coupling
         pg.setConfigOptions(background="#16180f", foreground="#e6e2d4", antialias=False)
         self._pg = pg
         self._QtWidgets = QtWidgets
         self.window = QtWidgets.QMainWindow()
         self.window.setWindowTitle("Sniff sync")
-        self.window.resize(1200, 820)
+        self.window.resize(1280, 980)
         central = QtWidgets.QWidget()
+        from PySide6 import QtGui
+
+        central.setAutoFillBackground(True)
+        palette = central.palette()
+        palette.setColor(QtGui.QPalette.ColorRole.Window, QtGui.QColor("#16180f"))
+        central.setPalette(palette)
         self.window.setCentralWidget(central)
         outer = QtWidgets.QVBoxLayout(central)
         self.status = QtWidgets.QLabel("Unix time on this computer, in seconds. Waiting for samples.")
@@ -126,11 +133,13 @@ class Monitor:
         outer.addWidget(self.status)
 
         body = QtWidgets.QHBoxLayout()
-        outer.addLayout(body)
+        outer.addLayout(body, 3)
         self._left_layout = QtWidgets.QVBoxLayout()
         self._right_layout = QtWidgets.QVBoxLayout()
         body.addLayout(self._left_layout, 1)
         body.addLayout(self._right_layout, 1)
+        self._bottom_layout = QtWidgets.QHBoxLayout()
+        outer.addLayout(self._bottom_layout, 2)
         self._panels = {}
 
         self.polar_plot = pg.PlotWidget(title="Respiratory phase and nasal pressure")
@@ -187,6 +196,10 @@ class Monitor:
         mode.addStretch(1)
         eeg_layout.addLayout(mode)
         self.add_panel("eeg", eeg_wrap, column="right")
+        from sniff_sync.coupling_panel import make_coupling_panel
+
+        self.coupling_panel = make_coupling_panel(coupling)
+        self.add_panel("coupling", self.coupling_panel, column="bottom")
 
         self._lines = []
         self._seen = set()
@@ -197,9 +210,14 @@ class Monitor:
         self.refresh()
 
     def add_panel(self, name, widget, column="right"):
-        """Place a panel. A later dynamical-system view uses this same call."""
+        """Place a panel. The directed-coupling view uses this same call."""
         self._panels[name] = widget
-        target = self._left_layout if column == "left" else self._right_layout
+        if column == "left":
+            target = self._left_layout
+        elif column == "bottom":
+            target = self._bottom_layout
+        else:
+            target = self._right_layout
         target.addWidget(widget)
 
     def refresh(self) -> None:
@@ -247,6 +265,7 @@ class Monitor:
             "Unix time in seconds on this computer. %d trigger%s."
             % (count, "" if count == 1 else "s")
         )
+        self.coupling_panel.refresh_display()
 
     def _draw_breath(self, samples) -> None:
         state = breath_state([pressure for _unix, pressure in samples])
