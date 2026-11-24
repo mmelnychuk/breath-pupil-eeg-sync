@@ -116,6 +116,8 @@ Electroencephalography is not used raw. Each channel is split into delta, theta,
 
 The table and the figure land in `recordings/P01/nlid/`. The measures, the conditional test that separates a direct breathing–attention link from one that only passes through pupil diameter, and the partial cross mapping comparison are written out in [docs/nonlinear_interdependence.md](docs/nonlinear_interdependence.md).
 
+Performance of pairwise M, conditional M and partial cross mapping on simulated data from the 2018 coupled-oscillator model is in [docs/nlid-performance-report.md](docs/nlid-performance-report.md).
+
 ## On the real rig
 
 - The sniff serial port in `getSniffs.py` is hard-coded. If the device name changed, `ls /dev/tty*` and update that path. The hub does not open the serial port.
