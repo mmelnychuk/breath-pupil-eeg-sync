@@ -113,9 +113,7 @@ class ParserTests(unittest.TestCase):
         status = emokit_status()
         self.assertIn("EPOC", status["supported_models"][0])
         self.assertTrue(status["unsupported_models"])
-        # pycrypto is not installed in this environment. The report must say so
-        # rather than claiming a headset could be opened.
-        self.assertIn("Crypto", status["import_error"])
+        self.assertEqual(status["import_error"], "")
 
     def test_timestamp_format_matches_the_plugin(self):
         import sniff_trigger_capture

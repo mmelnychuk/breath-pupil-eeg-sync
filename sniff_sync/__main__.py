@@ -45,7 +45,7 @@ def main(argv=None) -> int:
             from sniff_sync.viz import Monitor
 
             app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-            window = Monitor(session.feed)
+            window = Monitor(session.feed, coupling=session.hub.coupling)
             window.show()
         try:
             if args.seconds > 0 and window is None:
@@ -89,7 +89,13 @@ def main(argv=None) -> int:
 
     threads = []
     if args.sniff_csv:
-        threads.append(threading.Thread(target=_tail_sniff, args=(Path(args.sniff_csv), feed, lambda: stop), daemon=True))
+        threads.append(
+            threading.Thread(
+                target=_tail_sniff,
+                args=(Path(args.sniff_csv), feed, hub.history, lambda: stop),
+                daemon=True,
+            )
+        )
 
     def pump():
         while not stop:
@@ -104,6 +110,7 @@ def main(argv=None) -> int:
             if sample and sample["channels"]:
                 hub.eeg.write_sample(sample["unix_time"], sample["channels"], counter=sample["counter"])
                 feed.add_eeg(sample["unix_time"], sample["channels"])
+                hub.history.add_eeg(sample["unix_time"], sample["channels"])
             time.sleep(0.002)
 
     threads.append(threading.Thread(target=pump, daemon=True))
@@ -115,7 +122,7 @@ def main(argv=None) -> int:
                 time.sleep(0.2)
         from sniff_sync.viz import open_monitor
 
-        open_monitor(feed)
+        open_monitor(feed, coupling=hub.coupling)
     except KeyboardInterrupt:
         pass
     finally:
@@ -125,7 +132,7 @@ def main(argv=None) -> int:
     return 0
 
 
-def _tail_sniff(path: Path, feed, stopped) -> None:
+def _tail_sniff(path: Path, feed, history, stopped) -> None:
     """Follow a getSniffs.py CSV. Times are stored as Unix seconds."""
     while not path.exists() and not stopped():
         time.sleep(0.1)
@@ -144,7 +151,10 @@ def _tail_sniff(path: Path, feed, stopped) -> None:
             if len(parts) < 2 or parts[0] in ("Unix Time", "unix_time"):
                 continue
             try:
-                feed.add_breath(unix_seconds(parts[0]), float(parts[1]))
+                stamp = unix_seconds(parts[0])
+                pressure = float(parts[1])
+                feed.add_breath(stamp, pressure)
+                history.add_breath(stamp, pressure)
             except ValueError:
                 continue
 

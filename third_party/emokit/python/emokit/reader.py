@@ -13,8 +13,25 @@ from .util import validate_data, device_is_emotiv, hid_enumerate, print_hid_enum
 
 if system_platform == "Windows":
     import pywinusb.hid as hid
-else:
-    import hidapi
+
+# Loaded when a headset is opened. Importing this module does not require it.
+hidapi = None
+
+
+def _hidapi():
+    """Return the human-interface-device library.
+
+    ``pip install hidapi`` on current Python provides ``import hid``, not
+    ``import hidapi``. The old module name is tried first.
+    """
+    global hidapi
+    if hidapi is None:
+        try:
+            import hidapi as module
+        except ImportError:
+            from . import hidapi_compat as module
+        hidapi = module
+    return hidapi
 
 
 class EmotivReader(object):
@@ -32,7 +49,7 @@ class EmotivReader(object):
         self.serial_number = None
         self.lock = Lock()
         if self.platform != "Windows":
-            hidapi.hid_init()
+            _hidapi().hid_init()
         self.setup_platform = {
             'Windows': self.setup_windows,
             'Darwin': self.setup_not_windows,
@@ -117,11 +134,11 @@ class EmotivReader(object):
                 self.hid.close()
         if system_platform != "Windows":
             try:
-                hidapi.hid_close(source)
+                _hidapi().hid_close(source)
             except Exception:
                 pass
             try:
-                hidapi.hid_exit()
+                _hidapi().hid_exit()
             except Exception:
                 pass
         print("Reader stopped...")
@@ -150,7 +167,7 @@ class EmotivReader(object):
         if 'eeg_raw' in self.platform and self.hid is not None:
             self.hid.close()
         elif 'Windows' not in self.platform and self.hid is not None:
-            hidapi.hid_close(self.hid)
+            _hidapi().hid_close(self.hid)
 
     def setup_reader(self):
         """
@@ -195,12 +212,12 @@ class EmotivReader(object):
             # The decryption is handled by the Linux epoc daemon. We don't need to handle it.
             self.platform += " raw_eeg"
         else:
-            path, serial_number = hid_enumerate(hidapi, self.platform)
+            path, serial_number = hid_enumerate(_hidapi(), self.platform)
             if len(path) == 0:
-                print_hid_enumerate(system_platform, hidapi)
+                print_hid_enumerate(system_platform, _hidapi())
                 raise Exception("Device not found")
             self.serial_number = serial_number
-            self.hid = hidapi.hid_open_path(path)
+            self.hid = _hidapi().hid_open_path(path)
 
 
 def read_csv(source):
@@ -235,9 +252,9 @@ def read_non_windows(source, new_format=False):
     # Doesn't seem to matter how big we make the buffer 32 returned every time, 33 for other platforms
     # Set timeout for 1 second, to help with thread shutdown.
     if new_format:
-        data = validate_data(hidapi.hid_read_timeout(source, 64, 1000), new_format)
+        data = validate_data(_hidapi().hid_read_timeout(source, 64, 1000), new_format)
     else:
-        data = validate_data(hidapi.hid_read_timeout(source, 34, 1000), new_format)
+        data = validate_data(_hidapi().hid_read_timeout(source, 34, 1000), new_format)
     if data is not None:
         return ''.join(map(chr, data[1:]))
 

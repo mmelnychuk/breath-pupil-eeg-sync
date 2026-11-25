@@ -65,7 +65,35 @@ def _neighbor_radius(vectors, neighbor_index):
     return np.mean(np.einsum("ijk,ijk->ij", difference, difference), axis=1)
 
 
-def _average_ratio(numerator, denominator):
+def recency_weights(count, half_life_seconds, sample_rate_hz):
+    """Exponential weights. The newest reference point has weight 1.
+
+    A reference point one half-life older has weight one half. ``count`` is
+    the number of reference points, oldest first. Neighbour search is not
+    affected. Only the average over reference points uses these weights.
+    """
+    count = int(count)
+    if count < 1 or half_life_seconds is None or float(half_life_seconds) <= 0:
+        return None
+    age_seconds = (count - 1 - np.arange(count)) / float(sample_rate_hz)
+    return np.exp(-np.log(2.0) * age_seconds / float(half_life_seconds))
+
+
+def _weighted_mean(values, weights=None):
+    values = np.asarray(values, dtype=float)
+    finite = np.isfinite(values)
+    if weights is None:
+        if not np.any(finite):
+            return float("nan")
+        return float(np.mean(values[finite]))
+    weights = np.asarray(weights, dtype=float)
+    finite = finite & np.isfinite(weights) & (weights > 0)
+    if not np.any(finite):
+        return float("nan")
+    return float(np.sum(values[finite] * weights[finite]) / np.sum(weights[finite]))
+
+
+def _average_ratio(numerator, denominator, weights=None):
     numerator = np.asarray(numerator, dtype=float)
     denominator = np.asarray(denominator, dtype=float)
     finite = np.isfinite(numerator) & np.isfinite(denominator)
@@ -78,7 +106,9 @@ def _average_ratio(numerator, denominator):
         if np.all(np.abs(numerator[finite]) <= max(floor, 1e-18)):
             return 1.0
         return float("nan")
-    return float(np.mean(numerator[usable] / denominator[usable]))
+    ratios = numerator[usable] / denominator[usable]
+    used = None if weights is None else np.asarray(weights, dtype=float)[usable]
+    return _weighted_mean(ratios, used)
 
 
 def _bivariate_indices(target, source_neighbors, theiler_window, self_neighbors=None):
@@ -156,6 +186,8 @@ def conditional_interdependence(
     neighbor_count,
     pool_size,
     theiler_window,
+    recency_half_life_seconds=None,
+    sample_rate_hz=None,
 ):
     """Conditional S, H, N and M of the target given the source, after the conditioner.
 
@@ -179,11 +211,18 @@ def conditional_interdependence(
     improvement = radius_conditioner - radius_refined
     log_gap = np.log(np.maximum(radius_conditioner, 1e-15)) - np.log(np.maximum(radius_refined, 1e-15))
     ratio = radius_conditioner / np.maximum(radius_refined, 1e-15)
+    weights = recency_weights(len(target), recency_half_life_seconds, sample_rate_hz or 1.0)
+    if weights is None:
+        similarity = float(np.nanmean(ratio - 1.0))
+        interdependence = float(np.nanmean(log_gap))
+    else:
+        similarity = _weighted_mean(ratio - 1.0, weights)
+        interdependence = _weighted_mean(log_gap, weights)
     return {
-        "conditional_similarity_S": float(np.nanmean(ratio - 1.0)),
-        "conditional_interdependence_H": float(np.nanmean(log_gap)),
-        "conditional_normalised_interdependence_N": _average_ratio(improvement, radius_conditioner),
-        "conditional_andrzejak_M": _average_ratio(improvement, radius_conditioner - radius_self),
+        "conditional_similarity_S": similarity,
+        "conditional_interdependence_H": interdependence,
+        "conditional_normalised_interdependence_N": _average_ratio(improvement, radius_conditioner, weights),
+        "conditional_andrzejak_M": _average_ratio(improvement, radius_conditioner - radius_self, weights),
         "n_vectors": int(len(target)),
     }
 
@@ -369,6 +408,8 @@ def prediction_gain(
     pool_size,
     theiler_window,
     horizons,
+    recency_half_life_seconds=None,
+    sample_rate_hz=None,
 ):
     """Forecast gain from adding the source inside a joint target–conditioner neighbourhood.
 
@@ -401,10 +442,11 @@ def prediction_gain(
     pool_index, _ = neighbor_indices(joint, pool, theiler_window)
     # Futures of the original (z-scored) target sample, not of the whole delay vector.
     zscored_target = zscore(target_series)
+    weights = recency_weights(len(target), recency_half_life_seconds, sample_rate_hz or 1.0)
     gains = []
     for horizon in horizons:
         future = zscored_target[start + horizon : end + horizon]
-        gains.append(_forecast_gain(future, pool_index, source, neighbor_count))
+        gains.append(_forecast_gain(future, pool_index, source, neighbor_count, weights))
     best = int(np.nanargmax(gains))
     return {
         "prediction_gain": float(gains[best]),
@@ -414,13 +456,16 @@ def prediction_gain(
     }
 
 
-def _forecast_gain(future, pool_index, source, neighbor_count):
+def _forecast_gain(future, pool_index, source, neighbor_count, weights=None):
     baseline = pool_index[:, :neighbor_count]
     refined = _refine_pool(source, pool_index, neighbor_count)
 
     def mean_squared_error(neighbors):
         prediction = future[neighbors].mean(axis=1)
-        return float(np.mean(np.square(future - prediction)))
+        squared = np.square(future - prediction)
+        if weights is None:
+            return float(np.mean(squared))
+        return _weighted_mean(squared, weights)
 
     baseline_error = mean_squared_error(baseline)
     refined_error = mean_squared_error(refined)

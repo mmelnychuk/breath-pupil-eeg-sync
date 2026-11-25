@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import, division
 
-import os
 import sys
 import time
 from threading import Thread, Lock
@@ -40,7 +39,7 @@ class EmotivCrypto:
         self.is_research = is_research
         self.lock = Lock()
         self.thread = Thread(target=self.run)
-        self.thread.setDaemon(True)
+        self.thread.daemon = True
 
     def run(self):
         """
@@ -63,12 +62,7 @@ class EmotivCrypto:
                     if encrypted_task.data is not None:
                         if len(encrypted_task.data):
                             try:
-                                # Python 3 compatibility
-                                if sys.version_info >= (3, 0):
-                                    # Convert to byte array or bytes like object.
-                                    encrypted_data = bytes(encrypted_task.data, encoding='latin-1')
-                                else:
-                                    encrypted_data = encrypted_task.data
+                                encrypted_data = _packet_bytes(encrypted_task.data)
                                 # Decrypt the encrypted data.
                                 decrypted_data = decrypt_data(cipher, encrypted_data)
                                 # Put the decrypted data onto the decrypted Queue.
@@ -112,21 +106,21 @@ class EmotivCrypto:
         """
         if verbose:
             print("EmotivCrypto: Generating new AES cipher.")
-        # Create initialization vector.
-        iv = os.urandom(AES.block_size)
         # Make sure the serial number was set.
         if self.serial_number is None:
             raise ValueError("Serial number must not be None.")
         if verbose:
             print("EmotivCrypto: Serial Number - {serial_number}".format(serial_number=self.serial_number))
-        # Create and return new AES class, using the serial number and headset version.
+        # The key schedule is unchanged. Electronic codebook mode does not use an
+        # initialisation vector. pycryptodome rejects one; the older library ignored it.
         if self.serial_number.startswith('UD2016') and not self.force_old_crypto:
             if self.force_epoc_mode:
-                return AES.new(epoc_plus_crypto_key(self.serial_number), AES.MODE_ECB, iv)
+                key = epoc_plus_crypto_key(self.serial_number)
             else:
-                return AES.new(new_crypto_key(self.serial_number, self.verbose))
+                key = new_crypto_key(self.serial_number, self.verbose)
         else:
-            return AES.new(crypto_key(self.serial_number, self.is_research, verbose), AES.MODE_ECB, iv)
+            key = crypto_key(self.serial_number, self.is_research, verbose)
+        return _ecb_cipher(key)
 
     def add_task(self, data):
         """
@@ -168,6 +162,27 @@ class EmotivCrypto:
         self.stop()
 
 
+def _key_bytes(key):
+    """The key schedule still returns a text string. pycryptodome requires bytes."""
+    if isinstance(key, bytes):
+        return key
+    return key.encode("latin-1")
+
+
+def _packet_bytes(data):
+    """Encrypted packets arrive as text, bytes, or a list of integers."""
+    if isinstance(data, bytes):
+        return data
+    if isinstance(data, str):
+        return data.encode("latin-1")
+    return bytes(int(item) & 0xFF for item in data)
+
+
+def _ecb_cipher(key):
+    """Advanced Encryption Standard in electronic codebook mode, with no initialisation vector."""
+    return AES.new(_key_bytes(key), AES.MODE_ECB)
+
+
 def decrypt_data(cipher, data):
     """
     Returns decrypted data.
@@ -175,4 +190,5 @@ def decrypt_data(cipher, data):
     :param data: Encrypted Data
     :return: Decrypted Data
     """
+    data = _packet_bytes(data)
     return cipher.decrypt(data[:16]) + cipher.decrypt(data[16:])
