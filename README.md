@@ -222,6 +222,8 @@ Electroencephalography is not used raw. Each channel is split into delta, theta,
 
 The table and the figure land in `recordings/P01/nlid/`. The measures, the conditional test that separates a direct breathing–attention link from one that only passes through pupil diameter, and the partial cross mapping comparison are written out in [docs/nonlinear_interdependence.md](docs/nonlinear_interdependence.md).
 
+Performance of pairwise M, conditional M and partial cross mapping on simulated data from the 2018 coupled-oscillator model is in [docs/nlid-performance-report.md](docs/nlid-performance-report.md).
+
 ## Compare the live scores with the reference
 
 After a session that wrote `coupling_approximate.csv`:
